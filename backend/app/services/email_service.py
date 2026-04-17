@@ -4,6 +4,7 @@ from email.mime.text import MIMEText
 
 from app.api.schemas import SendTestEmailRequest
 from app.core.config import Settings
+from app.services.email_log_service import EmailLogService
 
 
 class EmailServiceError(Exception):
@@ -14,63 +15,102 @@ class EmailServiceError(Exception):
 
 
 class EmailService:
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        email_log_service: EmailLogService | None = None,
+    ) -> None:
         self.settings = settings
+        self.email_log_service = email_log_service or EmailLogService()
+
+    def validate_settings(self) -> None:
+        self._validate_settings()
 
     def send_test_email(self, payload: SendTestEmailRequest) -> None:
-        self._validate_settings()
-        message = self._build_message(payload)
+        self.send_email(
+            recipient=payload.to,
+            subject=payload.subject,
+            body=payload.body,
+        )
 
+    def send_email(self, recipient: str, subject: str, body: str) -> None:
         try:
+            self._validate_settings()
+            message = self._build_message(
+                recipient=recipient,
+                subject=subject,
+                body=body,
+            )
+
             if self.settings.smtp_port == 465:
                 with smtplib.SMTP_SSL(
                     self.settings.smtp_host,
                     self.settings.smtp_port,
                     timeout=30,
                 ) as server:
-                    self._login_and_send(server, payload.to, message)
-                return
+                    self._login_and_send(server, recipient, message)
+            else:
+                with smtplib.SMTP(
+                    self.settings.smtp_host,
+                    self.settings.smtp_port,
+                    timeout=30,
+                ) as server:
+                    server.ehlo()
+                    # Gmail on port 587 expects STARTTLS before login.
+                    server.starttls()
+                    server.ehlo()
+                    self._login_and_send(server, recipient, message)
 
-            with smtplib.SMTP(
-                self.settings.smtp_host,
-                self.settings.smtp_port,
-                timeout=30,
-            ) as server:
-                server.ehlo()
-                # Gmail on port 587 expects STARTTLS before login.
-                server.starttls()
-                server.ehlo()
-                self._login_and_send(server, payload.to, message)
+            self.log_sent_email(recipient, subject)
+        except EmailServiceError as exc:
+            self.log_failed_email(recipient, subject, exc.message)
+            raise
         except smtplib.SMTPAuthenticationError as exc:
-            raise EmailServiceError(
-                "SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD.",
-                status_code=401,
-            ) from exc
+            error_message = (
+                "SMTP authentication failed. Check SMTP_USER and SMTP_PASSWORD."
+            )
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=401) from exc
         except smtplib.SMTPConnectError as exc:
-            raise EmailServiceError(
-                "Unable to connect to the SMTP server. Check SMTP_HOST and SMTP_PORT.",
-                status_code=502,
-            ) from exc
+            error_message = (
+                "Unable to connect to the SMTP server. Check SMTP_HOST and SMTP_PORT."
+            )
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=502) from exc
         except smtplib.SMTPRecipientsRefused as exc:
-            raise EmailServiceError(
-                "The recipient address was refused by the SMTP server.",
-                status_code=400,
-            ) from exc
+            error_message = "The recipient address was refused by the SMTP server."
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=400) from exc
         except smtplib.SMTPServerDisconnected as exc:
-            raise EmailServiceError(
-                "The SMTP server disconnected unexpectedly.",
-                status_code=502,
-            ) from exc
+            error_message = "The SMTP server disconnected unexpectedly."
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=502) from exc
         except smtplib.SMTPException as exc:
-            raise EmailServiceError(
-                f"SMTP error while sending email: {exc}",
-                status_code=502,
-            ) from exc
+            error_message = f"SMTP error while sending email: {exc}"
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=502) from exc
         except (TimeoutError, OSError) as exc:
-            raise EmailServiceError(
-                "Network error while reaching the SMTP server.",
-                status_code=502,
-            ) from exc
+            error_message = "Network error while reaching the SMTP server."
+            self.log_failed_email(recipient, subject, error_message)
+            raise EmailServiceError(error_message, status_code=502) from exc
+
+    def log_sent_email(self, recipient: str, subject: str) -> None:
+        self.email_log_service.log_sent(
+            email=str(recipient),
+            subject=subject,
+        )
+
+    def log_failed_email(
+        self,
+        recipient: str,
+        subject: str,
+        error_message: str,
+    ) -> None:
+        self.email_log_service.log_failed(
+            email=str(recipient),
+            subject=subject,
+            error_message=error_message,
+        )
 
     def _validate_settings(self) -> None:
         missing = []
@@ -92,12 +132,17 @@ class EmailService:
                 status_code=500,
             )
 
-    def _build_message(self, payload: SendTestEmailRequest) -> MIMEMultipart:
+    def _build_message(
+        self,
+        recipient: str,
+        subject: str,
+        body: str,
+    ) -> MIMEMultipart:
         message = MIMEMultipart()
         message["From"] = self.settings.smtp_from or ""
-        message["To"] = str(payload.to)
-        message["Subject"] = payload.subject
-        message.attach(MIMEText(payload.body, "plain"))
+        message["To"] = str(recipient)
+        message["Subject"] = subject
+        message.attach(MIMEText(body, "plain"))
         return message
 
     def _login_and_send(

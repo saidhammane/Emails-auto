@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     app_name: str = "Email Dashboard & Automation Tool API"
     environment: str = "development"
     api_v1_prefix: str = "/api/v1"
+    database_url: str = "sqlite:///./email_dashboard.db"
     smtp_host: str | None = None
     smtp_port: int | None = None
     smtp_user: str | None = None

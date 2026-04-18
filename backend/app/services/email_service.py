@@ -1,10 +1,26 @@
+import re
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape, unescape
 
 from app.api.schemas import SendTestEmailRequest
 from app.core.config import Settings
 from app.services.email_log_service import EmailLogService
+
+EMAIL_SIGNATURE = """Said HAMMANE
+Ing\u00e9nieur Data & Business Intelligence
+
+Tableaux de bord Power BI | Automatisation Excel | Analyse financi\u00e8re
+
+\U0001F4CD Casablanca, Maroc
+\u2709 said.hammane1@gmail.com
+\U0001F517 linkedin.com/in/said-hammane
+\U0001F310 saidhammane.space"""
+
+HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+HTML_BODY_PATTERN = re.compile(r"</?[a-z][\s\S]*?>", re.IGNORECASE)
+BODY_CLOSE_TAG_PATTERN = re.compile(r"</body\s*>", re.IGNORECASE)
 
 
 class EmailServiceError(Exception):
@@ -36,10 +52,11 @@ class EmailService:
     def send_email(self, recipient: str, subject: str, body: str) -> None:
         try:
             self._validate_settings()
+            final_body = self._append_signature(body)
             message = self._build_message(
                 recipient=recipient,
                 subject=subject,
-                body=body,
+                body=final_body,
             )
 
             if self.settings.smtp_port == 465:
@@ -142,8 +159,48 @@ class EmailService:
         message["From"] = self.settings.smtp_from or ""
         message["To"] = str(recipient)
         message["Subject"] = subject
-        message.attach(MIMEText(body, "plain"))
+        subtype = "html" if self._body_looks_like_html(body) else "plain"
+        message.attach(MIMEText(body, subtype, "utf-8"))
         return message
+
+    def _append_signature(self, body: str) -> str:
+        normalized_body = body.rstrip()
+
+        if self._signature_already_present(normalized_body):
+            return normalized_body
+
+        if self._body_looks_like_html(normalized_body):
+            signature_html = escape(EMAIL_SIGNATURE).replace("\n", "<br>")
+            signature_block = f"<br><br>--<br>{signature_html}"
+
+            if not normalized_body:
+                return f"--<br>{signature_html}"
+
+            if BODY_CLOSE_TAG_PATTERN.search(normalized_body):
+                return BODY_CLOSE_TAG_PATTERN.sub(
+                    f"{signature_block}</body>",
+                    normalized_body,
+                    count=1,
+                )
+
+            return f"{normalized_body}{signature_block}"
+
+        if not normalized_body:
+            return f"--\n{EMAIL_SIGNATURE}"
+
+        return f"{normalized_body}\n\n--\n{EMAIL_SIGNATURE}"
+
+    def _signature_already_present(self, body: str) -> bool:
+        normalized_signature = self._normalize_content(EMAIL_SIGNATURE)
+        normalized_body = self._normalize_content(body)
+        return bool(normalized_signature and normalized_signature in normalized_body)
+
+    def _normalize_content(self, value: str) -> str:
+        text_content = unescape(HTML_TAG_PATTERN.sub(" ", value))
+        return " ".join(text_content.split()).casefold()
+
+    def _body_looks_like_html(self, body: str) -> bool:
+        return bool(HTML_BODY_PATTERN.search(body))
 
     def _login_and_send(
         self,
@@ -157,4 +214,3 @@ class EmailService:
             str(recipient),
             message.as_string(),
         )
-    

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 
 from pydantic import BaseModel, EmailStr, Field
 
@@ -48,3 +48,22 @@ class EmailLogResponse(BaseModel):
     status: str
     error_message: str | None = None
     timestamp: datetime
+
+
+class AnalyticsSummaryResponse(BaseModel):
+    total_sent: int
+    total_failed: int
+    total_scheduled: int
+    success_rate: float
+    failure_rate: float
+
+
+class DailyAnalyticsResponse(BaseModel):
+    date: date
+    sent_count: int
+    failed_count: int
+
+
+class ErrorInsightResponse(BaseModel):
+    error_message: str
+    count: int

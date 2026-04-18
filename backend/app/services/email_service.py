@@ -157,3 +157,4 @@ class EmailService:
             str(recipient),
             message.as_string(),
         )
+    

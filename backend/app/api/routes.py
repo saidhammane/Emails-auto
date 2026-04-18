@@ -2,13 +2,17 @@ from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
 
 from app.api.schemas import (
     ApiResponse,
+    AnalyticsSummaryResponse,
     BulkEmailResponse,
+    DailyAnalyticsResponse,
     EmailLogResponse,
+    ErrorInsightResponse,
     ScheduleEmailRequest,
     ScheduleResponse,
     SendTestEmailRequest,
 )
 from app.core.config import Settings, get_settings
+from app.services.analytics_service import AnalyticsService
 from app.services.bulk_email_service import BulkEmailService
 from app.services.email_service import EmailService, EmailServiceError
 from app.services.email_log_service import EmailLogService
@@ -20,6 +24,7 @@ email_router = APIRouter(tags=["Email"])
 bulk_email_router = APIRouter(tags=["Bulk Email"])
 scheduler_router = APIRouter(tags=["Scheduling"])
 logs_router = APIRouter(tags=["Logs"])
+analytics_router = APIRouter(prefix="/analytics", tags=["Analytics"])
 
 
 def get_email_service(settings: Settings = Depends(get_settings)) -> EmailService:
@@ -38,6 +43,10 @@ def get_scheduler_service() -> SchedulerService:
 
 def get_email_log_service() -> EmailLogService:
     return EmailLogService()
+
+
+def get_analytics_service() -> AnalyticsService:
+    return AnalyticsService()
 
 
 def build_api_response(success: bool, message: str) -> ApiResponse:
@@ -172,8 +181,30 @@ def get_email_logs(
     return email_log_service.list_logs()
 
 
+@analytics_router.get("/summary", response_model=AnalyticsSummaryResponse)
+def get_analytics_summary(
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+) -> AnalyticsSummaryResponse:
+    return analytics_service.get_summary()
+
+
+@analytics_router.get("/daily", response_model=list[DailyAnalyticsResponse])
+def get_analytics_daily(
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+) -> list[DailyAnalyticsResponse]:
+    return analytics_service.get_daily_activity()
+
+
+@analytics_router.get("/errors", response_model=list[ErrorInsightResponse])
+def get_analytics_errors(
+    analytics_service: AnalyticsService = Depends(get_analytics_service),
+) -> list[ErrorInsightResponse]:
+    return analytics_service.get_error_insights()
+
+
 router.include_router(health_router)
 router.include_router(email_router)
 router.include_router(bulk_email_router)
 router.include_router(scheduler_router)
 router.include_router(logs_router)
+router.include_router(analytics_router)

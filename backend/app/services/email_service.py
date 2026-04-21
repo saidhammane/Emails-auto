@@ -8,18 +8,41 @@ from app.api.schemas import SendTestEmailRequest
 from app.core.config import Settings
 from app.services.email_log_service import EmailLogService
 
-EMAIL_SIGNATURE = """Said HAMMANE
+EMAIL_SIGNATURE_TEXT = """──────────────────────────────
+SAID HAMMANE
 Ing\u00e9nieur Data & Business Intelligence
 
 Tableaux de bord Power BI | Automatisation Excel | Analyse financi\u00e8re
 
-\U0001F4CD Casablanca, Maroc
-\u2709 said.hammane1@gmail.com
-\U0001F517 linkedin.com/in/said-hammane
-\U0001F310 saidhammane.space"""
+Casablanca, Maroc
+said.hammane1@gmail.com
+linkedin.com/in/said-hammane
+saidhammane.space"""
 
+EMAIL_SIGNATURE_HTML = """
+<div style="margin-top:24px;font-family:Arial,sans-serif;color:#1f2937;line-height:1.6;">
+  <div style="color:#94a3b8;">──────────────────────────────</div>
+  <div style="font-weight:700;text-transform:uppercase;">SAID HAMMANE</div>
+  <div style="font-style:italic;">Ing\u00e9nieur Data &amp; Business Intelligence</div>
+  <div style="margin-top:12px;">
+    Tableaux de bord Power BI | Automatisation Excel | Analyse financi\u00e8re
+  </div>
+  <div style="margin-top:12px;">
+    Casablanca, Maroc<br>
+    said.hammane1@gmail.com<br>
+    linkedin.com/in/said-hammane<br>
+    saidhammane.space
+  </div>
+</div>
+""".strip()
+
+BR_TAG_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
 HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
 HTML_BODY_PATTERN = re.compile(r"</?[a-z][\s\S]*?>", re.IGNORECASE)
+BLOCK_CLOSE_TAG_PATTERN = re.compile(
+    r"</(?:p|div|section|article|li|ul|ol|table|tr|td|th|h[1-6])\s*>",
+    re.IGNORECASE,
+)
 BODY_CLOSE_TAG_PATTERN = re.compile(r"</body\s*>", re.IGNORECASE)
 
 
@@ -52,11 +75,12 @@ class EmailService:
     def send_email(self, recipient: str, subject: str, body: str) -> None:
         try:
             self._validate_settings()
-            final_body = self._append_signature(body)
+            text_body, html_body = self._build_signed_bodies(body)
             message = self._build_message(
                 recipient=recipient,
                 subject=subject,
-                body=final_body,
+                text_body=text_body,
+                html_body=html_body,
             )
 
             if self.settings.smtp_port == 465:
@@ -153,51 +177,81 @@ class EmailService:
         self,
         recipient: str,
         subject: str,
-        body: str,
+        text_body: str,
+        html_body: str,
     ) -> MIMEMultipart:
-        message = MIMEMultipart()
+        message = MIMEMultipart("alternative")
         message["From"] = self.settings.smtp_from or ""
         message["To"] = str(recipient)
         message["Subject"] = subject
-        subtype = "html" if self._body_looks_like_html(body) else "plain"
-        message.attach(MIMEText(body, subtype, "utf-8"))
+        message.attach(MIMEText(text_body, "plain", "utf-8"))
+        message.attach(MIMEText(html_body, "html", "utf-8"))
         return message
 
-    def _append_signature(self, body: str) -> str:
+    def _build_signed_bodies(self, body: str) -> tuple[str, str]:
         normalized_body = body.rstrip()
 
-        if self._signature_already_present(normalized_body):
-            return normalized_body
-
         if self._body_looks_like_html(normalized_body):
-            signature_html = escape(EMAIL_SIGNATURE).replace("\n", "<br>")
-            signature_block = f"<br><br>--<br>{signature_html}"
+            html_body = normalized_body
+            text_body = self._extract_text_content(normalized_body)
+        else:
+            text_body = normalized_body
+            html_body = self._convert_plain_text_to_html(normalized_body)
 
-            if not normalized_body:
-                return f"--<br>{signature_html}"
+        if self._signature_already_present(normalized_body):
+            return text_body, html_body
 
-            if BODY_CLOSE_TAG_PATTERN.search(normalized_body):
-                return BODY_CLOSE_TAG_PATTERN.sub(
-                    f"{signature_block}</body>",
-                    normalized_body,
-                    count=1,
-                )
+        return (
+            self._append_text_signature(text_body),
+            self._append_html_signature(html_body),
+        )
 
-            return f"{normalized_body}{signature_block}"
+    def _append_text_signature(self, text_body: str) -> str:
+        normalized_body = text_body.rstrip()
 
         if not normalized_body:
-            return f"--\n{EMAIL_SIGNATURE}"
+            return EMAIL_SIGNATURE_TEXT
 
-        return f"{normalized_body}\n\n--\n{EMAIL_SIGNATURE}"
+        return f"{normalized_body}\n\n{EMAIL_SIGNATURE_TEXT}"
+
+    def _append_html_signature(self, html_body: str) -> str:
+        normalized_body = html_body.strip()
+
+        if not normalized_body:
+            return EMAIL_SIGNATURE_HTML
+
+        signature_block = f"<br><br>{EMAIL_SIGNATURE_HTML}"
+
+        if BODY_CLOSE_TAG_PATTERN.search(normalized_body):
+            return BODY_CLOSE_TAG_PATTERN.sub(
+                f"{signature_block}</body>",
+                normalized_body,
+                count=1,
+            )
+
+        return f"{normalized_body}{signature_block}"
+
+    def _convert_plain_text_to_html(self, text_body: str) -> str:
+        escaped_body = escape(text_body)
+        return escaped_body.replace("\n", "<br>")
 
     def _signature_already_present(self, body: str) -> bool:
-        normalized_signature = self._normalize_content(EMAIL_SIGNATURE)
+        signature_lines = EMAIL_SIGNATURE_TEXT.splitlines()
+        signature_content = "\n".join(signature_lines[1:]).strip()
+        normalized_signature = self._normalize_content(signature_content)
         normalized_body = self._normalize_content(body)
         return bool(normalized_signature and normalized_signature in normalized_body)
 
     def _normalize_content(self, value: str) -> str:
-        text_content = unescape(HTML_TAG_PATTERN.sub(" ", value))
+        text_content = self._extract_text_content(value)
         return " ".join(text_content.split()).casefold()
+
+    def _extract_text_content(self, value: str) -> str:
+        with_line_breaks = BR_TAG_PATTERN.sub("\n", value)
+        with_block_breaks = BLOCK_CLOSE_TAG_PATTERN.sub("\n", with_line_breaks)
+        text_content = unescape(HTML_TAG_PATTERN.sub(" ", with_block_breaks))
+        collapsed_newlines = re.sub(r"\n{3,}", "\n\n", text_content)
+        return collapsed_newlines.strip()
 
     def _body_looks_like_html(self, body: str) -> bool:
         return bool(HTML_BODY_PATTERN.search(body))
